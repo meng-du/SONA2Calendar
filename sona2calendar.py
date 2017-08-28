@@ -158,8 +158,11 @@ def add_events_to_calendar(events):
             if not added or not page_token:
                 break
         if added:
-            # change the event name to a shorter one
-            created_event['summary'] = event.calendar_title()
+            # a few updates
+            created_event['summary'] = event.calendar_title()  # change the event name to a shorter one
+            for keyword in color_scheme:  # change the event color
+                if event.match(keyword):
+                    created_event['colorId'] = color_scheme[keyword]
             updated_event = calen_service.events().update(calendarId=google_calendar_id,
                                                           eventId=created_event['id'],
                                                           body=created_event).execute()
