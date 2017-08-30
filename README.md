@@ -1,6 +1,6 @@
 # SONA Studies to Google Calendar
 This script scrapes the SONA system to find your upcoming study timeslots, and adds the timeslots to a Google calendar.
-If you have a server, you can set it to run this script every few hours to get the timeslots synced to your Google calendar as often as you want.
+If you have a server, you can set it to run this script as often as you want to get the timeslots synced to your Google calendar.
 
 ### TODO
 - Remove previous timeslots
