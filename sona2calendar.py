@@ -1,3 +1,9 @@
+#
+# Syncing SONA Studies to Google Calendar
+# Author: Meng Du
+# August 2017
+#
+
 from __future__ import print_function
 import httplib2
 import os
@@ -9,6 +15,8 @@ from oauth2client.file import Storage
 
 from bs4 import BeautifulSoup
 import requests
+import datetime
+import time
 
 from constants import *
 from sona_event import SonaEvent
@@ -57,8 +65,9 @@ def get_credentials():
 
 
 def scrape_sona_study_timeslots(all_studies_page, session, payload):
-    events = []
+    events = {}
     studies = BeautifulSoup(all_studies_page, 'html.parser').find('tbody').findAll('tr')
+    empty_slots = set()
     for study in studies:
         study_name = study.find(id=lambda x: x and x.endswith('_HyperlinkNonStudentStudyInfo')).get_text()
         study_link = study.find(id=lambda x: x and x.endswith('_HyperlinkTimeSlot')).get('href')
@@ -73,8 +82,13 @@ def scrape_sona_study_timeslots(all_studies_page, session, payload):
         timeslots = timetable.findAll('tr')
         counter = 0
         for timeslot in timeslots[1:]:
+            # get timeslot id
+            timeslot_href = timeslot.find(id=lambda x: x and x.endswith('_Submit_Modify')).get('href')
+            timeslot_id = timeslot_href[timeslot_href.index('id=')+len('id='):timeslot_href.index('&')]
+            # check if signed up
             signed_up = int(timeslot.find(id=lambda x: x and x.endswith('_LabelParticipantSigned')).get_text()) > 0
             if not signed_up:
+                empty_slots.add(timeslot_id)
                 continue
             # timeslot signed up, parse information
             # fields: date, time, participant, location, researcher
@@ -82,13 +96,13 @@ def scrape_sona_study_timeslots(all_studies_page, session, payload):
                                 '_LabelResearcher']
             timeslot_info = [str(timeslot.find(id=lambda x: x and x.endswith(field_id)).get_text())
                              for field_id in field_id_endings]
-            sona_event = SonaEvent(study_name, *timeslot_info)
+            sona_event = SonaEvent(timeslot_id, study_name, *timeslot_info)
             if sona_event.sona_study_name in calendar_study_names:
                 sona_event.calendar_study_name = calendar_study_names[sona_event.sona_study_name]
-            events.append(sona_event)
+            events[timeslot_id] = sona_event
             counter += 1
-        print('Found ' + str(counter) + ' upcoming timeslots for ' + study_name)
-    return events
+        print('Found ' + str(counter) + ' upcoming timeslot(s) for ' + study_name)
+    return events, empty_slots
 
 
 def scrape_sona():
@@ -129,55 +143,80 @@ def scrape_sona():
     return scrape_sona_study_timeslots(r.text, session, payload)
 
 
-def add_events_to_calendar(events):
+def get_utc_offset_str():
+    # get time zone information
+    is_dst = time.daylight and time.localtime().tm_isdst > 0
+    utc_offset = -(time.altzone if is_dst else time.timezone)
+    if utc_offset == 0:
+        return 'Z'
+    elif utc_offset > 0:
+        offset_str = '+'
+    else:
+        offset_str = '-'
+    hours, remainder = divmod(abs(utc_offset), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    offset_str += '%02d:%02d' % (hours, minutes)
+    return offset_str
+
+
+def add_events_to_calendar(events, empty_slots):
     print('Connecting to Google calendar...')
     credentials = get_credentials()
     http = credentials.authorize(httplib2.Http())
-    # Create a Google Calendar API service object and add the events to calendar
-    calen_service = discovery.build('calendar', 'v3', http=http)
-    for event in events:
-        # quick add to calendar
-        created_event = calen_service.events().quickAdd(
-            calendarId=google_calendar_id,
-            text=event.summary()).execute()
-        added = True
-        # # check for duplicates
-        page_token = None
-        while True:
-            calevents = calen_service.events().list(
-                calendarId=google_calendar_id,
-                timeMin=created_event['start']['dateTime'],
-                timeMax=created_event['end']['dateTime'], pageToken=page_token).execute()
-            for calevent in calevents['items']:
-                if calevent['id'] != created_event['id'] and calevent['summary'] == event.calendar_title():
-                    calen_service.events().delete(calendarId=google_calendar_id, eventId=created_event['id']).execute()
-                    added = False
-                    print('Event "' + event.calendar_title() + '" already exists.\n')
-                    break
-            page_token = calevents.get('nextPageToken')
-            if not added or not page_token:
+    # Create a Google Calendar API service object
+    service = discovery.build('calendar', 'v3', http=http)
+    # Fetch events from calendar and see if anything changed
+    print('Fetching events from Google calendar...')
+    page_token = None
+    while True:
+        calevents = service.events().list(calendarId=google_calendar_id,
+                                          pageToken=page_token,
+                                          timeMin=datetime.datetime.utcnow().isoformat() + 'Z').execute()
+        for calevent in calevents['items']:
+            if 'description' in calevent:
+                timeslot_id = calevent['description']
+                event_name = calevent['summary']
+                if timeslot_id in events:  # same timeslot id
+                    event = events[calevent['description']]
+                    if event != calevent:
+                        # update
+                        if event.insert2calendar(service, google_calendar_id, utc_offset_str, calevent['colorId']):
+                            service.events().delete(calendarId=google_calendar_id, eventId=calevent['id']).execute()
+                            print('Event "' + event_name + '" updated.\n')
+                    else:
+                        # same event
+                        print('Event "' + event_name + '" already exists.\n')
+                    del events[timeslot_id]
+                elif timeslot_id in empty_slots:
+                    # participant cancelled, remove calendar event
+                    service.events().delete(calendarId=google_calendar_id, eventId=calevent['id']).execute()
+                    print('Event "' + event_name + '" removed from calendar.\n')
+        page_token = calevents.get('nextPageToken')
+        if not page_token:
+            break
+    if len(events) == 0:
+        return
+    # add the rest of events
+    for event in events.values():
+        color = '1'
+        for keyword in color_scheme:  # change the event color
+            if event.match_keywords(keyword):
+                color = color_scheme[keyword]
                 break
-        if added:
-            # a few updates
-            created_event['summary'] = event.calendar_title()  # change the event name to a shorter one
-            for keyword in color_scheme:  # change the event color
-                if event.match(keyword):
-                    created_event['colorId'] = color_scheme[keyword]
-            updated_event = calen_service.events().update(calendarId=google_calendar_id,
-                                                          eventId=created_event['id'],
-                                                          body=created_event).execute()
-            if updated_event:
-                print('Event "' + event.calendar_title() + '" added to calendar.\n')
+        if event.insert2calendar(service, google_calendar_id, color):
+            print('Event "' + event.calendar_summary() + '" added to calendar.\n')
 
 
 if __name__ == '__main__':
     try:
-        events = scrape_sona()
+        is_dst = time.daylight and time.localtime().tm_isdst > 0
+        utc_offset = -(time.altzone if is_dst else time.timezone)
+        events, empty_slots = scrape_sona()
         if len(events) == 0:
             print('No upcoming events found.')
             quit(0)
 
-        add_events_to_calendar(events)
+        add_events_to_calendar(events, empty_slots)
         print('Done.')
 
     except (errors.HttpError, RuntimeError) as error:
