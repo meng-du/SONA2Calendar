@@ -5,12 +5,12 @@
 #
 
 from datetime import datetime
-import dateutil.parser
+from dateutil import tz, parser
 
 
 class SonaEvent:
-    def __init__(self, id, sona_study_name, date, time, participant, location, researcher):
-        self.id = id
+    def __init__(self, slot_id, sona_study_name, date, time, participant, location, researcher):
+        self.id = slot_id
         self.sona_study_name = sona_study_name
         self.participant = participant
         self.location = location
@@ -26,8 +26,9 @@ class SonaEvent:
         string1 = string[:divide]
         string2 = string[divide:]
         time1 = datetime.strptime(string1, '%A, %B %d, %Y %I:%M %p')
+        time1 = time1.replace(tzinfo=tz.tzlocal())
         time2 = datetime.strptime(string2, ' - %I:%M %p')
-        time2 = time2.replace(year=time1.year, month=time1.month, day=time1.day)
+        time2 = time2.replace(year=time1.year, month=time1.month, day=time1.day, tzinfo=tz.tzlocal())
         return time1, time2
 
     def __str__(self):
@@ -39,21 +40,19 @@ class SonaEvent:
                '\n\tResearcher: ' + self.researcher
 
     def __eq__(self, other):
-        print('?')
         if isinstance(other, SonaEvent):
             return self.id == other.id and self.start_time == other.start_time and self.end_time == other.end_time and \
                    self.participant == other.participant
         if isinstance(other, dict):
             # a Google Calendar event dict
             try:
-                start_time = dateutil.parser.parse(other['start']['dateTime'])
-                end_time = dateutil.parser.parse(other['end']['dateTime'])
+                start_time = parser.parse(other['start']['dateTime'])
+                end_time = parser.parse(other['end']['dateTime'])
                 same = ('description' not in other or self.id == other['description']) and \
                        self.start_time == start_time and \
                        self.end_time == end_time and \
                        self.participant in other['summary'] and \
                        self.researcher.split()[0] in other['summary']
-                print(same)
                 return same
             except KeyError:
                 return False

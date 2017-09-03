@@ -16,7 +16,6 @@ from oauth2client.file import Storage
 from bs4 import BeautifulSoup
 import requests
 import datetime
-import time
 
 from constants import *
 from sona_event import SonaEvent
@@ -27,7 +26,7 @@ try:
 except ImportError:
     flags = None
 
-# Constants for Google API
+# Constants for Google APIs
 # If modifying these scopes, delete your previously saved credentials
 # at ~/.credentials/sona2calendar-python.json
 SCOPES = 'https://www.googleapis.com/auth/calendar'
@@ -58,7 +57,7 @@ def get_credentials():
         flow.user_agent = APPLICATION_NAME
         if flags:
             credentials = tools.run_flow(flow, store, flags)
-        else: # Needed only for compatibility with Python 2.6
+        else:  # Needed only for compatibility with Python 2.6
             credentials = tools.run(flow, store)
         print('Storing credentials to ' + credential_path)
     return credentials
@@ -84,7 +83,11 @@ def scrape_sona_study_timeslots(all_studies_page, session, payload):
         for timeslot in timeslots[1:]:
             # get timeslot id
             timeslot_href = timeslot.find(id=lambda x: x and x.endswith('_Submit_Modify')).get('href')
-            timeslot_id = timeslot_href[timeslot_href.index('id=')+len('id='):timeslot_href.index('&')]
+            id_start = timeslot_href.index('id=') + len('id=')
+            try:
+                timeslot_id = timeslot_href[id_start:timeslot_href.index('&')]
+            except ValueError:  # no '&' found
+                timeslot_id = timeslot_href[id_start:]
             # check if signed up
             signed_up = int(timeslot.find(id=lambda x: x and x.endswith('_LabelParticipantSigned')).get_text()) > 0
             if not signed_up:
@@ -135,31 +138,31 @@ def scrape_sona():
     print('Logging in...')
     r = session.post(login_page, data=payload)
     if 'Login failed' in r.text:
-        raise RuntimeError('SONA login failed. Please check your credentials.')
-    print('Login successful.')
+        raise RuntimeError('SONA login failed. Please check your SONA domain and credentials.')
+    print('Login successful')
     # browse all studies
     print('Fetching study list...')
     r = session.get(all_studies_page, data=payload)
     return scrape_sona_study_timeslots(r.text, session, payload)
 
 
-def get_utc_offset_str():
-    # get time zone information
-    is_dst = time.daylight and time.localtime().tm_isdst > 0
-    utc_offset = -(time.altzone if is_dst else time.timezone)
-    if utc_offset == 0:
-        return 'Z'
-    elif utc_offset > 0:
-        offset_str = '+'
-    else:
-        offset_str = '-'
-    hours, remainder = divmod(abs(utc_offset), 3600)
-    minutes, seconds = divmod(remainder, 60)
-    offset_str += '%02d:%02d' % (hours, minutes)
-    return offset_str
+# def get_utc_offset_str():
+#     # get time zone information
+#     is_dst = time.daylight and time.localtime().tm_isdst > 0
+#     utc_offset = -(time.altzone if is_dst else time.timezone)
+#     if utc_offset == 0:
+#         return 'Z'
+#     elif utc_offset > 0:
+#         offset_str = '+'
+#     else:
+#         offset_str = '-'
+#     hours, remainder = divmod(abs(utc_offset), 3600)
+#     minutes, seconds = divmod(remainder, 60)
+#     offset_str += '%02d:%02d' % (hours, minutes)
+#     return offset_str
 
 
-def add_events_to_calendar(events, empty_slots):
+def add_events_to_calendar():
     print('Connecting to Google calendar...')
     credentials = get_credentials()
     http = credentials.authorize(httplib2.Http())
@@ -169,9 +172,8 @@ def add_events_to_calendar(events, empty_slots):
     print('Fetching events from Google calendar...')
     page_token = None
     while True:
-        calevents = service.events().list(calendarId=google_calendar_id,
-                                          pageToken=page_token,
-                                          timeMin=datetime.datetime.utcnow().isoformat() + 'Z').execute()
+        now = datetime.datetime.utcnow().isoformat() + 'Z'
+        calevents = service.events().list(calendarId=google_calendar_id, pageToken=page_token, timeMin=now).execute()
         for calevent in calevents['items']:
             if 'description' in calevent:
                 timeslot_id = calevent['description']
@@ -180,17 +182,17 @@ def add_events_to_calendar(events, empty_slots):
                     event = events[calevent['description']]
                     if event != calevent:
                         # update
-                        if event.insert2calendar(service, google_calendar_id, utc_offset_str, calevent['colorId']):
+                        if event.insert2calendar(service, google_calendar_id, calevent['colorId']):
                             service.events().delete(calendarId=google_calendar_id, eventId=calevent['id']).execute()
-                            print('Event "' + event_name + '" updated.\n')
+                            print('Event "' + event_name + '" updated')
                     else:
                         # same event
-                        print('Event "' + event_name + '" already exists.\n')
+                        print('Event "' + event_name + '" already exists')
                     del events[timeslot_id]
                 elif timeslot_id in empty_slots:
                     # participant cancelled, remove calendar event
                     service.events().delete(calendarId=google_calendar_id, eventId=calevent['id']).execute()
-                    print('Event "' + event_name + '" removed from calendar.\n')
+                    print('Event "' + event_name + '" removed from calendar')
         page_token = calevents.get('nextPageToken')
         if not page_token:
             break
@@ -198,26 +200,24 @@ def add_events_to_calendar(events, empty_slots):
         return
     # add the rest of events
     for event in events.values():
-        color = '1'
-        for keyword in color_scheme:  # change the event color
+        color = '1'  # default color
+        for keyword in color_scheme:  # change the event color as specified
             if event.match_keywords(keyword):
                 color = color_scheme[keyword]
                 break
         if event.insert2calendar(service, google_calendar_id, color):
-            print('Event "' + event.calendar_summary() + '" added to calendar.\n')
+            print('Event "' + event.calendar_summary() + '" added to calendar')
 
 
 if __name__ == '__main__':
     try:
-        is_dst = time.daylight and time.localtime().tm_isdst > 0
-        utc_offset = -(time.altzone if is_dst else time.timezone)
         events, empty_slots = scrape_sona()
         if len(events) == 0:
-            print('No upcoming events found.')
+            print('No upcoming events found')
             quit(0)
 
-        add_events_to_calendar(events, empty_slots)
-        print('Done.')
+        add_events_to_calendar()
+        print('Done')
 
     except (errors.HttpError, RuntimeError) as error:
         print('An error occurred: %s' % error)
