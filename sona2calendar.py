@@ -116,7 +116,7 @@ def scrape_sona():
     # read sona credentials from file
     with open(sona_credentials_file) as infile:
         sona_credentials = infile.read().splitlines()
-    if len(sona_credentials) != 2:
+    if len(sona_credentials) < 2:
         raise RuntimeError('Invalid SONA credentials')
     payload = {
         'ctl00$ContentPlaceHolder1$userid': sona_credentials[0],
