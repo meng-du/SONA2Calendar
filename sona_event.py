@@ -52,7 +52,8 @@ class SonaEvent:
                        self.start_time == start_time and \
                        self.end_time == end_time and \
                        self.participant in other['summary'] and \
-                       self.researcher.split()[0] in other['summary']
+                       self.researcher.split()[0] in other['summary'] and \
+                       other['summary'].startswith(self.calendar_study_name)
                 return same
             except KeyError:
                 return False
