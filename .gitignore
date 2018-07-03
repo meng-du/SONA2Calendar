@@ -1,4 +1,4 @@
 *.pyc
 .*
-client_secret.json
+client_secret*
 sona_credentials.txt

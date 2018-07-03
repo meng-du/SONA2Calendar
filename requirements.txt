@@ -1,5 +1,6 @@
 httplib2
 requests>=2.18.4
-google_api_python_client
+google-api-python-client
+oauth2client
 beautifulsoup4>=4.6.0
 python_dateutil

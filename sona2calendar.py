@@ -1,7 +1,7 @@
 #
 # Syncing SONA Studies to Google Calendar
 # Author: Meng Du
-# August 2017
+# July 2018
 #
 
 from __future__ import print_function
@@ -89,17 +89,36 @@ def scrape_sona_study_timeslots(all_studies_page, session, payload):
             except ValueError:  # no '&' found
                 timeslot_id = timeslot_href[id_start:]
             # check if signed up
-            signed_up = int(timeslot.find(id=lambda x: x and x.endswith('_LabelParticipantSigned')).get_text()) > 0
-            if not signed_up:
+            signups = int(timeslot.find(id=lambda x: x and x.endswith('_LabelParticipantSigned')).get_text())
+            if signups == 0:
                 empty_slots.add(timeslot_id)
                 continue
             # timeslot signed up, parse information
-            # fields: date, time, participant, location, researcher
-            field_id_endings = ['_LabelDate', '_LabelDate2', '_LabelStudentTimeSlot', '_LabelNoSurvey',
-                                '_LabelResearcher']
-            timeslot_info = [str(timeslot.find(id=lambda x: x and x.endswith(field_id)).get_text())
-                             for field_id in field_id_endings]
-            sona_event = SonaEvent(timeslot_id, study_name, *timeslot_info)
+            # fields: date, time, participant, location, (researcher)
+            field_id_endings = {'_LabelDate': 'date', '_LabelDate2': 'time', '_LabelNoSurvey': 'location'}
+            timeslot_info = {field_id_endings[field_id]:
+                    str(timeslot.find(id=lambda x: x and x.endswith(field_id)).get_text())
+                    for field_id in field_id_endings}
+            participants = timeslot.findAll(id=lambda x: x and x.endswith('_LabelStudentTimeSlot'))
+            if len(participants) == 1:
+                timeslot_info['participant'] = str(participants[0].get_text())
+            else:
+                timeslot_info['participant'] = ', '.join([str(p.get_text()) for p in participants])
+            # researcher may not be there
+            html_researcher = timeslot.find(id=lambda x: x and x.endswith('_LabelResearcher'))
+            if html_researcher:
+                timeslot_info['researcher'] = str(html_researcher.get_text())
+            else:
+                # get researcher name from study info page
+                info_link = sona_domain + 'exp_info.aspx?' + study_link.split('?')[1].split('&')[0]
+                r = session.get(info_link, data=payload)
+                info = BeautifulSoup(r.text, 'html.parser')
+                researcher = info.find(id=lambda x: x and x.endswith('_LabelResearcherName')).get_text()
+                timeslot_info['researcher'] = str(researcher)
+            if timeslot_info['researcher'] in researcher_names:
+                timeslot_info['researcher'] = researcher_names[timeslot_info['researcher']]
+            # construct sona event
+            sona_event = SonaEvent(timeslot_id, study_name, **timeslot_info)
             if sona_event.sona_study_name in calendar_study_names:
                 sona_event.calendar_study_name = calendar_study_names[sona_event.sona_study_name]
             events[timeslot_id] = sona_event
@@ -171,31 +190,32 @@ def add_events_to_calendar():
     # Fetch events from calendar and see if anything changed
     print('Fetching events from Google calendar...')
     page_token = None
-    while True:
-        now = datetime.datetime.utcnow().isoformat() + 'Z'
-        calevents = service.events().list(calendarId=google_calendar_id, pageToken=page_token, timeMin=now).execute()
-        for calevent in calevents['items']:
-            if 'description' in calevent:
-                timeslot_id = calevent['description']
-                event_name = calevent['summary']
-                if timeslot_id in events:  # same timeslot id
-                    event = events[calevent['description']]
-                    if event != calevent:
-                        # update
-                        if event.insert2calendar(service, google_calendar_id, calevent['colorId']):
-                            service.events().delete(calendarId=google_calendar_id, eventId=calevent['id']).execute()
-                            print('Event "' + event_name + '" updated')
-                    else:
-                        # same event
-                        print('Event "' + event_name + '" already exists')
-                    del events[timeslot_id]
-                elif timeslot_id in empty_slots:
-                    # participant cancelled, remove calendar event
-                    service.events().delete(calendarId=google_calendar_id, eventId=calevent['id']).execute()
-                    print('Event "' + event_name + '" removed from calendar')
-        page_token = calevents.get('nextPageToken')
-        if not page_token:
-            break
+    for calendar_id in google_calendar_ids.values():
+        while True:
+            now = datetime.datetime.utcnow().isoformat() + 'Z'
+            calevents = service.events().list(calendarId=calendar_id, pageToken=page_token, timeMin=now).execute()
+            for calevent in calevents['items']:
+                if 'description' in calevent:
+                    timeslot_id = calevent['description']
+                    event_name = calevent['summary']
+                    if timeslot_id in events:  # same timeslot id
+                        event = events[calevent['description']]
+                        if event != calevent:
+                            # update
+                            if event.insert2calendar(service, calendar_id, calevent['colorId']):
+                                service.events().delete(calendarId=calendar_id, eventId=calevent['id']).execute()
+                                print('Event "' + event_name + '" updated')
+                        else:
+                            # same event
+                            print('Event "' + event_name + '" already exists')
+                        del events[timeslot_id]
+                    elif timeslot_id in empty_slots:
+                        # participant cancelled, remove calendar event
+                        service.events().delete(calendarId=calendar_id, eventId=calevent['id']).execute()
+                        print('Event "' + event_name + '" removed from calendar')
+            page_token = calevents.get('nextPageToken')
+            if not page_token:
+                break
     if len(events) == 0:
         return
     # add the rest of events
@@ -205,7 +225,8 @@ def add_events_to_calendar():
             if event.match_keywords(keyword):
                 color = color_scheme[keyword]
                 break
-        if event.insert2calendar(service, google_calendar_id, color):
+        calendar_id = google_calendar_ids[event.sona_study_name]
+        if event.insert2calendar(service, calendar_id, color):
             print('Event "' + event.calendar_summary() + '" added to calendar')
 
 
