@@ -8,7 +8,7 @@ from datetime import datetime
 from dateutil import tz, parser
 
 
-class SonaEvent:
+class SonaEvent(object):
     def __init__(self, slot_id, sona_study_name, date, time, participant, location, researcher):
         self.id = slot_id
         self.sona_study_name = sona_study_name

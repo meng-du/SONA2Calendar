@@ -1,7 +1,7 @@
 #
 # Syncing SONA Studies to Google Calendar
 # Author: Meng Du
-# July 2018
+# October 2018
 #
 
 from __future__ import print_function
@@ -9,9 +9,7 @@ import httplib2
 import os
 
 from apiclient import discovery, errors
-from oauth2client import client
-from oauth2client import tools
-from oauth2client.file import Storage
+from oauth2client import file, client, tools
 
 from bs4 import BeautifulSoup
 import requests
@@ -20,18 +18,12 @@ import datetime
 from constants import *
 from sona_event import SonaEvent
 
-try:
-    import argparse
-    flags = argparse.ArgumentParser(parents=[tools.argparser]).parse_args()
-except ImportError:
-    flags = None
 
 # Constants for Google APIs
 # If modifying these scopes, delete your previously saved credentials
 # at ~/.credentials/sona2calendar-python.json
 SCOPES = 'https://www.googleapis.com/auth/calendar'
-CLIENT_SECRET_FILE = 'client_secret.json'
-APPLICATION_NAME = 'Sona Studies to Calendar Event'
+CLIENT_SECRET_FILE = 'credentials.json'
 
 
 def get_credentials():
@@ -43,24 +35,12 @@ def get_credentials():
     Returns:
         Credentials, the obtained credential.
     """
-    home_dir = os.path.expanduser('~')
-    credential_dir = os.path.join(home_dir, '.credentials')
-    if not os.path.exists(credential_dir):
-        os.makedirs(credential_dir)
-    credential_path = os.path.join(credential_dir,
-                                   'sona2calendar-python.json')
-
-    store = Storage(credential_path)
-    credentials = store.get()
-    if not credentials or credentials.invalid:
+    store = file.Storage('token.json')
+    creds = store.get()
+    if not creds or creds.invalid:
         flow = client.flow_from_clientsecrets(CLIENT_SECRET_FILE, SCOPES)
-        flow.user_agent = APPLICATION_NAME
-        if flags:
-            credentials = tools.run_flow(flow, store, flags)
-        else:  # Needed only for compatibility with Python 2.6
-            credentials = tools.run(flow, store)
-        print('Storing credentials to ' + credential_path)
-    return credentials
+        creds = tools.run_flow(flow, store)
+    return creds
 
 
 def scrape_sona_study_timeslots(all_studies_page, session, payload):
@@ -68,7 +48,11 @@ def scrape_sona_study_timeslots(all_studies_page, session, payload):
     studies = BeautifulSoup(all_studies_page, 'html.parser').find('tbody').findAll('tr')
     empty_slots = set()
     for study in studies:
-        study_name = study.find(id=lambda x: x and x.endswith('_HyperlinkNonStudentStudyInfo')).get_text()
+        study_name = study.find(id=lambda x: x and x.endswith('_HyperlinkNonStudentStudyInfo'))
+        if study_name is None:
+            print('No active SONA study found')
+            return (), ()
+        study_name = study_name.get_text()
         study_link = study.find(id=lambda x: x and x.endswith('_HyperlinkTimeSlot')).get('href')
         study_link += '&p_show=U'  # show upcoming timeslots only
         # go to the timeslot page
@@ -165,27 +149,11 @@ def scrape_sona():
     return scrape_sona_study_timeslots(r.text, session, payload)
 
 
-# def get_utc_offset_str():
-#     # get time zone information
-#     is_dst = time.daylight and time.localtime().tm_isdst > 0
-#     utc_offset = -(time.altzone if is_dst else time.timezone)
-#     if utc_offset == 0:
-#         return 'Z'
-#     elif utc_offset > 0:
-#         offset_str = '+'
-#     else:
-#         offset_str = '-'
-#     hours, remainder = divmod(abs(utc_offset), 3600)
-#     minutes, seconds = divmod(remainder, 60)
-#     offset_str += '%02d:%02d' % (hours, minutes)
-#     return offset_str
-
-
 def add_events_to_calendar():
     print('Connecting to Google calendar...')
     credentials = get_credentials()
-    http = credentials.authorize(httplib2.Http())
     # Create a Google Calendar API service object
+    http = credentials.authorize(httplib2.Http())
     service = discovery.build('calendar', 'v3', http=http)
     # Fetch events from calendar and see if anything changed
     print('Fetching events from Google calendar...')
